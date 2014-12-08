@@ -46,6 +46,7 @@ class QueryController extends ControllerBase
 								WHERE depth = r1.depth
 								AND destination_city = \''.$dest_city.'\'
 							)
+						
 							
 						)::INT[]);';
 
@@ -140,6 +141,7 @@ class QueryController extends ControllerBase
 								AND destination_city = \''.$dest_city.'\'
 							)
 							AND destination_city = \''.$dest_city.'\'
+							limit 1
 							
 						)::INT[]);';
 
@@ -225,7 +227,9 @@ class QueryController extends ControllerBase
 							, r.stopover +
 							CASE WHEN f.departure_time > r.arrival_time 
 							THEN ((f.departure_time/100 - r.arrival_time/100) * 60) + (f.departure_time%100 - r.arrival_time%100)
-							ELSE ((23 - @(f.departure_time/100 - r.arrival_time/100)) * 60) + @(f.departure_time%100 - r.arrival_time%100)
+							WHEN f.departure_time < r.arrival_time
+							THEN ((23 - @(f.departure_time/100 - r.arrival_time/100)) * 60) + @(f.departure_time%100 - r.arrival_time%100)
+							ELSE 0::INT
 							END AS stopover
 							, r.depth+1 AS depth, 
 							r.previous_flight || f.flight_number AS previous_flight FROM flight f
@@ -233,9 +237,12 @@ class QueryController extends ControllerBase
 						)
 						SELECT f1.flight_number, f1.departure_city, f1.destination_city, f1.departure_time, f1.arrival_time, f1.airfare
 						,
-						CASE WHEN f2.departure_time > f1.arrival_time 
+						CASE WHEN f1.destination_city = \''.$dest_city.'\' THEN 0::INT
+						WHEN f2.departure_time > f1.arrival_time 
 						THEN ((f2.departure_time/100 - f1.arrival_time/100) * 60) + (f2.departure_time%100 - f1.arrival_time%100)
-						ELSE ((23 - @(f2.departure_time/100 - f1.arrival_time/100)) * 60) + @(f2.departure_time%100 - f1.arrival_time%100)
+						WHEN f2.departure_time < f1.arrival_time
+						THEN ((23 - @(f2.departure_time/100 - f1.arrival_time/100)) * 60) + @(f2.departure_time%100 - f1.arrival_time%100)
+						ELSE 0::INT
 						END AS stopover_minutes
 						FROM flight f1
 						LEFT JOIN flight f2 ON f1.destination_city = f2.departure_city
@@ -264,7 +271,7 @@ class QueryController extends ControllerBase
 							AND stopover <= '.$stopover.'
 							LIMIT 1
 							
-						)::INT[]) OR f2.flight_number IS NULL);';
+						)::INT[]) OR f2.departure_city = \''.$dest_city.'\');';
 
 				$query = $this->db->query($sql);
 				$results = [];
@@ -383,7 +390,7 @@ class QueryController extends ControllerBase
 			$dest_city = $this->request->getPost('dest_city');
 			$stop_city = $this->request->getPost('stop_city');
 
-			if( $depart_city !== "" && $dest_city !== "" && $stop_city !== "" && $stop_city !== $depart_city && $depart_city !== $dest_city) {
+			if( $depart_city !== "" && $dest_city !== "" && $stop_city !== "" && $stop_city !== $depart_city && $stop_city !== $dest_city && $depart_city !== $dest_city) {
 
 				$sql = 'WITH RECURSIVE reaches(flight_number,departure_city,destination_city,airfare,depth) AS (
 							SELECT flight_number,departure_city,destination_city,airfare, 1::INT AS depth, 
@@ -578,89 +585,83 @@ class QueryController extends ControllerBase
 
 	public function twobAction()
 	{
+
 		$bad = false;
 		if ($this->request->isPost()) {
 
 			$depart_city = $this->request->getPost('depart_city');
 			$dest_city = $this->request->getPost('dest_city');
 
+
 			if( $depart_city !== "" && $dest_city !== "" && $depart_city !== $dest_city) {
 
-				$sql = 'WITH RECURSIVE reaches(flight_number,departure_city,destination_city,mileage,departure_time,arrival_time, stopover, depth) AS (
+				$sql = 'WITH RECURSIVE reaches(flight_number,departure_city,destination_city,mileage,departure_time,arrival_time,flight_time,stopover,total_time, depth) AS (
 							SELECT flight_number,departure_city,destination_city,mileage,departure_time,arrival_time
+							, ((arrival_time/100 - departure_time/100) * 60) + (arrival_time%100 - departure_time%100) AS flight_time
 							, 0::INT AS stopover
+							, ((arrival_time/100 - departure_time/100) * 60) + (arrival_time%100 - departure_time%100) AS total_time
 							, 1::INT AS depth
 							,NULL::INT[] || flight_number AS previous_flight FROM flight 
 							WHERE departure_city = \''.$depart_city.'\'
 							UNION ALL
 							SELECT f.flight_number,f.departure_city, f.destination_city,f.mileage+r.mileage
 							,f.departure_time,f.arrival_time
+							, r.flight_time + 
+							((f.arrival_time/100 - f.departure_time/100) * 60) + (f.arrival_time%100 - f.departure_time%100) AS flight_time
 							, r.stopover +
 							CASE WHEN f.departure_time > r.arrival_time 
 							THEN ((f.departure_time/100 - r.arrival_time/100) * 60) + (f.departure_time%100 - r.arrival_time%100)
 							ELSE ((23 - @(f.departure_time/100 - r.arrival_time/100)) * 60) + @(f.departure_time%100 - r.arrival_time%100)
 							END AS stopover
+							, r.flight_time + ((f.arrival_time/100 - f.departure_time/100) * 60) + (f.arrival_time%100 - f.departure_time%100) 
+							+ r.stopover +
+							CASE WHEN f.departure_time > r.arrival_time 
+							THEN ((f.departure_time/100 - r.arrival_time/100) * 60) + (f.departure_time%100 - r.arrival_time%100)
+							ELSE ((23 - @(f.departure_time/100 - r.arrival_time/100)) * 60) + @(f.departure_time%100 - r.arrival_time%100)
+							END AS total_time
 							, r.depth+1 AS depth, 
 							r.previous_flight || f.flight_number AS previous_flight FROM flight f
 							JOIN reaches r ON f.departure_city = r.destination_city
 						)
-						SELECT flight_number, departure_city, destination_city, departure_time, arrival_time, mileage
-						FROM flight
-						WHERE flight_number = ANY ((
-							SELECT DISTINCT previous_flight
-							FROM reaches r1
-							WHERE depth = ( 
-								SELECT MIN(depth) FROM reaches
-								WHERE destination_city = \''.$dest_city.'\'
-							)
-							AND destination_city = \''.$dest_city.'\'
-							LIMIT 1
-							
-						)::INT[]);';
+
+						SELECT DISTINCT previous_flight
+						FROM reaches r1
+						WHERE depth = ( 
+							SELECT MIN(depth) FROM reaches
+							WHERE destination_city = \''.$dest_city.'\'
+						)
+						AND destination_city = \''.$dest_city.'\'';
 
 				$query = $this->db->query($sql);
+				$paths = [];
+				$query->setFetchMode(PhalconDb::FETCH_ASSOC);
+				while( $path = $query->fetchArray()){
+					array_push($paths, $path);
+				}
+				print_r($paths);
 				$results = [];
-				$query->setFetchMode(PhalconDb::FETCH_ASSOC);
-				while( $result = $query->fetchArray()){
-					array_push($results, $result);
+				foreach( $paths as $key => $value ) {
+					$nums = trim($value['previous_flight'], "{}");
+					$nums = explode(',', $nums);
+					$flights = '';
+					for($i = 0; $i < count($nums); $i++) {
+						$flights .= 'SELECT '.($i+1).'::INT AS "#", flight_number, departure_city, destination_city, departure_time, arrival_time, mileage FROM flight
+									WHERE flight_number = '.$nums[$i];
+						if( $i < count($nums)-1 ) {
+							$flights .= ' UNION ';
+						} else {
+							$flights .= ' ORDER BY "#";';
+						}
+					}
+					$query = $this->db->query($flights);
+					$temp = [];
+					$query->setFetchMode(PhalconDb::FETCH_ASSOC);
+					while( $t = $query->fetchArray()){
+						array_push($temp, $t);
+					}
+					array_push($results, $temp);
 				}
 
-
-				$sql2 = 'WITH RECURSIVE reaches(flight_number,departure_city,destination_city,mileage,departure_time,arrival_time, stopover, depth) AS (
-							SELECT flight_number,departure_city,destination_city,mileage,departure_time,arrival_time
-							, 0::INT AS stopover
-							, 1::INT AS depth
-							,NULL::INT[] || flight_number AS previous_flight FROM flight 
-							WHERE departure_city = \''.$depart_city.'\'
-							UNION ALL
-							SELECT f.flight_number,f.departure_city, f.destination_city,f.mileage+r.mileage
-							,f.departure_time,f.arrival_time
-							, r.stopover +
-							CASE WHEN f.departure_time > r.arrival_time 
-							THEN ((f.departure_time/100 - r.arrival_time/100) * 60) + (f.departure_time%100 - r.arrival_time%100)
-							ELSE ((23 - @(f.departure_time/100 - r.arrival_time/100)) * 60) + @(f.departure_time%100 - r.arrival_time%100)
-							END AS stopover
-							, r.depth+1 AS depth, 
-							r.previous_flight || f.flight_number AS previous_flight FROM flight f
-							JOIN reaches r ON f.departure_city = r.destination_city
-						)
-						SELECT MIN(mileage) FROM reaches
-						WHERE destination_city = \''.$dest_city.'\'';
-
-				$query = $this->db->query($sql2);
-				$total = [];
-				$query->setFetchMode(PhalconDb::FETCH_ASSOC);
-				while( $t = $query->fetchArray()){
-					array_push($total, $t);
-				}
-
-
-				if( empty($results) ){
-					$columns = [];
-				} else {
-					$first = $results[0];
-					$columns = array_keys($first);
-				}
 			} else {
 				$bad = true;
 			}
@@ -676,10 +677,8 @@ class QueryController extends ControllerBase
 			));
 		}
 
-		$this->view->pick("query/Twoa");
+		$this->view->pick("query/Threea");
 		$this->view->results = $results;
-		$this->view->columns = $columns;
-		$this->view->total = $total;
 	}
 
 
@@ -841,7 +840,7 @@ class QueryController extends ControllerBase
 							r.previous_flight || f.flight_number AS previous_flight FROM flight f
 							JOIN reaches r ON f.departure_city = r.destination_city
 						)
-						SELECT f1.flight_number, f1.departure_city, f1.destination_city, f1.departure_time, f1.arrival_time, f1.airfare
+						SELECT DISTINCT f1.flight_number, f1.departure_city, f1.destination_city, f1.departure_time, f1.arrival_time, f1.airfare
 						,((f1.arrival_time/100 - f1.departure_time/100) * 60) + (f1.arrival_time%100 - f1.departure_time%100) AS flight_minutes
 						,
 						CASE WHEN f1.destination_city = \''.$dest_city.'\' THEN NULL
